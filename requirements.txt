@@ -1,1 +1,3 @@
-pip install sunpy[all] drms matplotlib
+sunpy[all]
+drms
+matplotlib
