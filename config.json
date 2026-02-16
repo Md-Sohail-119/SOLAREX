@@ -5,12 +5,10 @@
     },
     "query": {
         "start_time": "2012-01-01 00:00:00",
-        "end_time": "2012-03-01 00:00:00",
-        "min_goes_class": "M1.0"
+        "end_time": "2012-01-01 05:00:00"
     },
     "hmi": {
-        "cadence_seconds": 45,
-        "offset_minutes_before_flare": 60,
+        "sampling_cadence_minutes": 60,
         "download_method": "fido" 
     }
 }
