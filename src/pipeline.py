@@ -1,9 +1,13 @@
 import os
+import time
 import json
 import logging
 from datetime import datetime, timedelta
 from sunpy.net import Fido, attrs as a
 from astropy.time import Time
+import numpy as np
+from skimage.transform import resize
+import sunpy.map
 
 
 # --- Phase 1: Orchestration ---
@@ -33,7 +37,6 @@ def fetch_all_flare_events(start_time, end_time):
         a.Time(start_time, end_time),
         a.hek.EventType("FL"),
         a.hek.OBS.Observatory == "GOES",
-        # Notice we removed the a.hek.FL.GOESCls filter here to get everything!
     )
 
     if len(query) == 0:
@@ -62,10 +65,41 @@ def download_hmi_for_target_time(target_time, output_dir, method="fido"):
         if len(result) == 0 or len(result[0]) == 0:
             return None
 
-        return Fido.fetch(result[0, 0], path=output_dir, max_conn=1)
+        # Fido.fetch returns a Parfive Results object; extract the first file path
+        fetched = Fido.fetch(result[0, 0], path=output_dir, max_conn=1)
+        return fetched[0] if fetched else None
 
     elif method == "drms":
         logging.error("DRMS method selected but not yet fully integrated.")
+        return None
+
+
+# --- Phase 3: Preprocessing ---
+def process_and_compress(fits_file, processed_dir, target_shape=(224, 224)):
+    """Loads FITS, downsamples for the model, saves as .npz, and deletes raw file."""
+    os.makedirs(processed_dir, exist_ok=True)
+    logging.info(f"Processing and downsampling: {fits_file}")
+
+    try:
+        hmi_map = sunpy.map.Map(fits_file)
+        raw_data = hmi_map.data
+
+        # Anti-aliasing preserves solar feature integrity during severe downsampling
+        downsampled_data = resize(raw_data, target_shape, anti_aliasing=True)
+
+        obs_time = hmi_map.date.isot.replace(":", "-")
+        out_filename = os.path.join(processed_dir, f"hmi_downsampled_{obs_time}.npz")
+
+        np.savez_compressed(out_filename, image=downsampled_data, time=obs_time)
+        logging.info(f"Saved compressed array: {out_filename}")
+
+        os.remove(fits_file)
+        logging.info(f"Deleted original raw FITS: {fits_file}")
+
+        return out_filename
+
+    except Exception as e:
+        logging.error(f"Error processing {fits_file}: {e}")
         return None
 
 
@@ -75,42 +109,52 @@ def main():
     setup_logging(config["pipeline"]["log_file"])
     logging.info("--- Starting Cadence-Driven Data Pipeline ---")
 
-    output_dir = config["pipeline"]["output_dir"]
+    raw_dir = config["pipeline"]["output_dir"]
+    # Automatically create a processed directory parallel to the raw one
+    processed_dir = os.path.join(os.path.dirname(raw_dir), "processed")
     cadence_mins = config["hmi"]["sampling_cadence_minutes"]
 
-    # Parse times into Python datetime objects for easy math
     start_dt = datetime.strptime(config["query"]["start_time"], "%Y-%m-%d %H:%M:%S")
     end_dt = datetime.strptime(config["query"]["end_time"], "%Y-%m-%d %H:%M:%S")
 
-    # 1. Fetch all metadata (We will use this list later in Phase 3 to label the images)
+    # 1. Fetch metadata
     flares = fetch_all_flare_events(
         config["query"]["start_time"], config["query"]["end_time"]
     )
 
-    # 2. Continuous Cadence Downloading
+    processed_arrays = []
+
+    # 2. Continuous Cadence Downloading & Immediate Processing
     current_dt = start_dt
 
     while current_dt <= end_dt:
         target_time_astropy = Time(current_dt)
         logging.info(f"--- Sampling Step: {target_time_astropy.isot} ---")
 
-        downloaded_files = download_hmi_for_target_time(
+        downloaded_file = download_hmi_for_target_time(
             target_time=target_time_astropy,
-            output_dir=output_dir,
+            output_dir=raw_dir,
             method=config["hmi"]["download_method"],
         )
 
-        if downloaded_files:
-            logging.info(f"Successfully acquired: {downloaded_files[0]}")
+        if downloaded_file:
+            logging.info(f"Successfully acquired: {downloaded_file}")
+
+            # 3. Inline downsampling and cleanup
+            npz_file = process_and_compress(downloaded_file, processed_dir)
+            if npz_file:
+                processed_arrays.append(npz_file)
         else:
             logging.warning(
                 f"Failed to acquire HMI data for {target_time_astropy.isot}"
             )
 
-        # Step forward in time by the specified cadence
         current_dt += timedelta(minutes=cadence_mins)
+        time.sleep(1)
 
-    logging.info("--- Pipeline Execution Complete ---")
+    logging.info(
+        f"--- Pipeline Execution Complete. Generated {len(processed_arrays)} compressed arrays. ---"
+    )
 
 
 if __name__ == "__main__":
