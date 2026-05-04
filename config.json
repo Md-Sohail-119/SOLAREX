@@ -4,8 +4,8 @@
         "log_file": "pipeline.log"
     },
     "query": {
-        "start_time": "2012-01-01 00:00:00",
-        "end_time": "2012-01-01 05:00:00"
+        "start_time": "2022-01-01 00:00:00",
+        "end_time": "2022-01-01 02:00:00"
     },
     "hmi": {
         "sampling_cadence_minutes": 60,
